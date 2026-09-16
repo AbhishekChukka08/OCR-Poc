@@ -2,12 +2,12 @@ using KycOcr.Api.Models;
 
 namespace KycOcr.Api.Services;
 
-public class KycExtractionService
+// The field set each document type is expected to yield, shared by every
+// extraction engine (Tesseract label-matching, Gemini, ...) so they all
+// target the same response shape and "how complete was this?" logic.
+public static class KycFieldSchema
 {
-    private readonly TesseractOcrEngine _ocrEngine;
-    private readonly LabelFieldExtractor _labelExtractor;
-
-    private static readonly Dictionary<DocumentType, (string Field, string Label)[]> LabelMaps = new()
+    public static readonly Dictionary<DocumentType, (string Field, string Label)[]> FieldsByDocType = new()
     {
         [DocumentType.NationalId] = new[]
         {
@@ -49,39 +49,13 @@ public class KycExtractionService
         },
     };
 
-    public KycExtractionService(TesseractOcrEngine ocrEngine, LabelFieldExtractor labelExtractor)
+    // Same "was this actually a good read?" rule for every engine: too few
+    // of the expected fields came back non-empty, flag it for human review
+    // rather than trusting a mostly-empty result.
+    public static bool ComputeNeedsReview(DocumentType docType, Dictionary<string, string> fields)
     {
-        _ocrEngine = ocrEngine;
-        _labelExtractor = labelExtractor;
-    }
-
-    public ExtractionResponse Extract(DocumentType docType, byte[] imageBytes)
-    {
-        var ocr = _ocrEngine.Extract(imageBytes);
-        var fields = _labelExtractor.Extract(ocr.Rows, LabelMaps[docType]);
-
-        if (docType == DocumentType.Passport)
-        {
-            var mrz = MrzParser.TryParse(ocr.RawText);
-            if (mrz != null)
-            {
-                // MRZ is fixed-format and far more reliable than the free-text
-                // fields above it, so it wins where both were read.
-                foreach (var (key, value) in mrz)
-                    fields[key] = value;
-            }
-        }
-
-        var expectedFieldCount = LabelMaps[docType].Length;
+        var expectedFieldCount = FieldsByDocType[docType].Length;
         var extractionRate = fields.Count / (double)expectedFieldCount;
-
-        return new ExtractionResponse
-        {
-            DocumentType = docType.ToString(),
-            Fields = fields,
-            NeedsReview = extractionRate < 0.5,
-            OcrConfidence = ocr.MeanConfidence,
-            RawText = ocr.RawText,
-        };
+        return extractionRate < 0.5;
     }
 }

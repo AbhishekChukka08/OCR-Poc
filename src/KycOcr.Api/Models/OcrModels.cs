@@ -10,6 +10,7 @@ public enum DocumentType
 public class ExtractionResponse
 {
     public string DocumentType { get; set; } = "";
+    public string Engine { get; set; } = "";
     public Dictionary<string, string> Fields { get; set; } = new();
 
     // True when too few of the expected fields for this document type were
