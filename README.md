@@ -63,12 +63,17 @@ curl -X POST "http://localhost:5080/api/ocr/extract" \
   "engine": "gemini",
   "fields": { "IdNumber": "...", "FullName": "...", "...": "..." },
   "needsReview": false,
-  "ocrConfidence": 1,
+  "ocrConfidence": 0.9,
+  "inputTokens": 1297,
+  "outputTokens": 154,
+  "estimatedCostUsd": 0.00055525,
   "rawText": "..."
 }
 ```
 
 `needsReview: true` means at least one expected field for that document type came back missing — the caller should prompt for a retake / manual entry rather than trust the result as-is.
+
+`inputTokens` / `outputTokens` / `estimatedCostUsd` are only populated for `engine=gemini` (Tesseract is free/local, so these are `null`). Cost is computed from Gemini's own reported token usage against `gemini-3.1-flash-lite`'s rate card ($0.25/1M input tokens, $1.50/1M output tokens) — update the constants in `GeminiKycExtractor.cs` if the configured model changes.
 
 ## Project structure
 

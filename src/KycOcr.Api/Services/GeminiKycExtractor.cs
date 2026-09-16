@@ -13,6 +13,14 @@ public class GeminiKycExtractor : IKycExtractor
 {
     private const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions";
 
+    // Pricing for gemini-3.1-flash-lite (per Google's rate card): $0.25 per
+    // 1M input tokens (text/image/video), $1.50 per 1M output tokens. Only
+    // accurate for this exact model - if Gemini:Model is ever changed to a
+    // different model, update these or the cost estimate will be wrong for
+    // the new model's actual rate.
+    private const decimal InputCostPerMillionTokens = 0.25m;
+    private const decimal OutputCostPerMillionTokens = 1.50m;
+
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
     private readonly string _model;
@@ -47,7 +55,15 @@ public class GeminiKycExtractor : IKycExtractor
         if (!httpResponse.IsSuccessStatusCode)
             throw new InvalidOperationException($"Gemini API call failed ({(int)httpResponse.StatusCode}): {responseText}");
 
-        var fields = ParseFields(responseText);
+        var root = JsonNode.Parse(responseText)?.AsObject()
+            ?? throw new InvalidOperationException("Gemini response was not valid JSON.");
+
+        var fields = ParseFields(root);
+        var (inputTokens, outputTokens) = ParseUsage(root);
+        var estimatedCost = inputTokens.HasValue && outputTokens.HasValue
+            ? inputTokens.Value / 1_000_000m * InputCostPerMillionTokens
+                + outputTokens.Value / 1_000_000m * OutputCostPerMillionTokens
+            : (decimal?)null;
 
         return new ExtractionResponse
         {
@@ -55,7 +71,10 @@ public class GeminiKycExtractor : IKycExtractor
             Engine = "gemini",
             Fields = fields,
             NeedsReview = KycFieldSchema.ComputeNeedsReview(docType, fields),
-            OcrConfidence = 1f, // not meaningful for a model-based read - kept only for response-shape parity
+            OcrConfidence = 0.9f, // not meaningful for a model-based read - kept only for response-shape parity
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
+            EstimatedCostUsd = estimatedCost,
             RawText = responseText,
         };
     }
@@ -118,11 +137,8 @@ public class GeminiKycExtractor : IKycExtractor
         return "image/jpeg";
     }
 
-    private static Dictionary<string, string> ParseFields(string responseJson)
+    private static Dictionary<string, string> ParseFields(JsonObject root)
     {
-        var root = JsonNode.Parse(responseJson)?.AsObject()
-            ?? throw new InvalidOperationException("Gemini response was not valid JSON.");
-
         var steps = root["steps"]?.AsArray()
             ?? throw new InvalidOperationException("Gemini response had no 'steps' array.");
 
@@ -146,5 +162,16 @@ public class GeminiKycExtractor : IKycExtractor
                 fields[key] = text;
         }
         return fields;
+    }
+
+    // Gemini reports token usage on every response ("usage.total_input_tokens" /
+    // "total_output_tokens") - reading it back is what lets us turn it into
+    // an approximate per-request cost above.
+    private static (int? InputTokens, int? OutputTokens) ParseUsage(JsonObject root)
+    {
+        var usage = root["usage"]?.AsObject();
+        var inputTokens = usage?["total_input_tokens"]?.GetValue<int>();
+        var outputTokens = usage?["total_output_tokens"]?.GetValue<int>();
+        return (inputTokens, outputTokens);
     }
 }
