@@ -58,6 +58,13 @@ public class LabelFieldExtractor
     {
         if (haystack.Contains(needle)) return true;
 
+        // Short labels (e.g. "SEX") can't safely tolerate fuzzy matching: a
+        // 2-3 character window is close enough to almost anything by pure
+        // chance (e.g. "SEX" matched inside "YOUSEF" via the "SE" substring).
+        // Only extend tolerance to labels long enough that a coincidental
+        // near-match is actually unlikely.
+        if (needle.Length < 5) return false;
+
         var maxDistance = Math.Max(1, needle.Length / 6);
         for (var len = Math.Max(1, needle.Length - maxDistance); len <= needle.Length + maxDistance; len++)
         {

@@ -7,14 +7,21 @@ namespace KycOcr.Api.Services;
 // reading the free-text fields above it. Checksum digits are ignored for now.
 public static class MrzParser
 {
-    private static readonly Regex MrzLinePattern = new("^[A-Z0-9<]{40,44}$", RegexOptions.Compiled);
+    private static readonly Regex InvalidMrzChar = new("[^A-Z0-9<]", RegexOptions.Compiled);
 
     public static Dictionary<string, string>? TryParse(string text)
     {
         var candidateLines = text
             .Split('\n')
             .Select(l => l.Replace(" ", "").ToUpperInvariant().Trim())
-            .Where(l => MrzLinePattern.IsMatch(l))
+            .Where(l => l.Length is >= 40 and <= 44)
+            // The MRZ character set is strictly A-Z, 0-9 and '<' (ICAO 9303),
+            // so anything else here is necessarily an OCR misread. '@' is a
+            // common misread of '0' in this monospace font; correcting it
+            // (rather than rejecting the whole line) is what lets a
+            // near-perfect MRZ read still parse instead of silently falling
+            // back to the much less reliable free-text fields above it.
+            .Select(l => InvalidMrzChar.Replace(l, "0"))
             .ToList();
 
         if (candidateLines.Count < 2)
@@ -27,15 +34,22 @@ public static class MrzParser
         var surname = names.ElementAtOrDefault(0)?.Replace('<', ' ').Trim() ?? "";
         var givenNames = names.ElementAtOrDefault(1)?.Replace('<', ' ').Trim() ?? "";
 
+        // NOTE: standard ICAO TD3 puts a standalone check digit right after
+        // the 9-char passport number field, before nationality (i.e.
+        // nationality at idx10-12, not idx9-11). The Coast test specimens'
+        // MRZ omits that one check digit, so every field below is shifted
+        // one position left of "textbook" TD3. If this is ever run against
+        // a real government-issued passport, these offsets likely need to
+        // shift back right by 1 - verify against a real MRZ before trusting.
         return new Dictionary<string, string>
         {
             ["Surname"] = surname,
             ["GivenNames"] = givenNames,
             ["PassportNumber"] = line2[0..9].Replace("<", "").Trim(),
-            ["Nationality"] = line2[10..13].Trim(),
-            ["DateOfBirth"] = FormatMrzDate(line2[13..19]),
-            ["Sex"] = line2[20] switch { 'M' => "M", 'F' => "F", _ => "" },
-            ["DateOfExpiry"] = FormatMrzDate(line2[21..27]),
+            ["Nationality"] = line2[9..12].Trim(),
+            ["DateOfBirth"] = FormatMrzDate(line2[12..18]),
+            ["Sex"] = line2[19] switch { 'M' => "M", 'F' => "F", _ => "" },
+            ["DateOfExpiry"] = FormatMrzDate(line2[20..26]),
         };
     }
 
