@@ -6,11 +6,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<TesseractOcrEngine>();
 builder.Services.AddSingleton<LabelFieldExtractor>();
 builder.Services.AddSingleton<TesseractKycExtractor>();
-builder.Services.AddHttpClient<GeminiKycExtractor>();
+builder.Services.AddHttpClient<OpenAiKycExtractor>();
 
 var app = builder.Build();
 
-app.MapPost("/api/ocr/extract", async (HttpRequest request, TesseractKycExtractor tesseractExtractor, GeminiKycExtractor geminiExtractor) =>
+app.MapPost("/api/ocr/extract", async (HttpRequest request, TesseractKycExtractor tesseractExtractor, OpenAiKycExtractor openAiExtractor) =>
 {
     if (!request.HasFormContentType)
         return Results.BadRequest("Expected multipart/form-data with an 'image' file and a 'docType' field.");
@@ -26,9 +26,9 @@ app.MapPost("/api/ocr/extract", async (HttpRequest request, TesseractKycExtracto
     if (!Enum.TryParse<DocumentType>(docTypeRaw, ignoreCase: true, out var docType))
         return Results.BadRequest($"Invalid 'docType'. Expected one of: {string.Join(", ", Enum.GetNames<DocumentType>())}");
 
-    // "tesseract" (default) or "gemini" - same request/response contract either way.
-    IKycExtractor extractor = engineRaw.Equals("gemini", StringComparison.OrdinalIgnoreCase)
-        ? geminiExtractor
+    // "tesseract" (default) or "openai" - same request/response contract either way.
+    IKycExtractor extractor = engineRaw.Equals("openai", StringComparison.OrdinalIgnoreCase)
+        ? openAiExtractor
         : tesseractExtractor;
 
     using var ms = new MemoryStream();

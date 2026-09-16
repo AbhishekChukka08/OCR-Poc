@@ -3,7 +3,7 @@
 A minimal .NET Web API that extracts KYC fields (name, ID number, dates, etc.) from a photo of a National ID, Passport, or Trade License. Two interchangeable extraction engines sit behind the same endpoint:
 
 - **Tesseract** (default) — open source OCR + label matching, runs fully offline, free.
-- **Gemini** — sends the image to a Gemini vision model and asks it to read the fields directly. More accurate on rotated/blurry/noisy images, requires an API key and an internet connection.
+- **OpenAI** — sends the image to a GPT-4o-mini vision model and asks it to read the fields directly. More accurate on rotated/blurry/noisy images, requires an API key and an internet connection. Costs more per call than Tesseract (roughly $0.005-0.006 per extraction, since OpenAI's image tokenization is comparatively expensive) but noticeably more reliable on hard images.
 
 ## Prerequisites
 
@@ -14,18 +14,18 @@ A minimal .NET Web API that extracts KYC fields (name, ID number, dates, etc.) f
   ```
   (installs to your user profile, no admin rights needed — then add `$env:USERPROFILE\.dotnet` to your PATH)
 - No separate Tesseract install needed — the native engine ships inside the `Tesseract` NuGet package, and the English language data (`tessdata/eng.traineddata`) is already committed in this repo.
-- **A Gemini API key** — only needed if you want to use `engine=gemini`. Get a free one at https://aistudio.google.com. Tesseract works with zero setup.
+- **An OpenAI API key** — only needed if you want to use `engine=openai`. Get one at https://platform.openai.com/api-keys. Tesseract works with zero setup.
 
 ## Setup
 
 1. Clone/pull the repo.
-2. (Optional, only for the Gemini engine) Store your API key with `dotnet user-secrets` — this keeps it out of the repo entirely:
+2. (Optional, only for the OpenAI engine) Store your API key with `dotnet user-secrets` — this keeps it out of the repo entirely:
    ```powershell
    cd src/KycOcr.Api
-   dotnet user-secrets set "Gemini:ApiKey" "your-key-here"
-   dotnet user-secrets set "Gemini:Model" "gemini-3.1-flash-lite"
+   dotnet user-secrets set "OpenAI:ApiKey" "your-key-here"
+   dotnet user-secrets set "OpenAI:Model" "gpt-4o-mini"
    ```
-   Without this, `engine=gemini` requests will fail with a clear error; `engine=tesseract` (the default) is unaffected.
+   Without this, `engine=openai` requests will fail with a clear error; `engine=tesseract` (the default) is unaffected.
 
 ## Running
 
@@ -46,13 +46,13 @@ Test it with curl, Postman, or your frontend directly — see below. (No Swagger
 |---|---|---|
 | `image` | yes | the document photo/scan (jpg/png) |
 | `docType` | yes | `NationalId`, `Passport`, or `TradeLicense` (case-insensitive) |
-| `engine` | no | `tesseract` (default) or `gemini` |
+| `engine` | no | `tesseract` (default) or `openai` |
 
 **Example (curl):**
 ```bash
 curl -X POST "http://localhost:5080/api/ocr/extract" \
   -F "docType=NationalId" \
-  -F "engine=gemini" \
+  -F "engine=openai" \
   -F "image=@/path/to/id-photo.jpg"
 ```
 
@@ -60,20 +60,20 @@ curl -X POST "http://localhost:5080/api/ocr/extract" \
 ```json
 {
   "documentType": "NationalId",
-  "engine": "gemini",
+  "engine": "openai",
   "fields": { "IdNumber": "...", "FullName": "...", "...": "..." },
   "needsReview": false,
   "ocrConfidence": 0.9,
-  "inputTokens": 1297,
-  "outputTokens": 154,
-  "estimatedCostUsd": 0.00055525,
+  "inputTokens": 37091,
+  "outputTokens": 121,
+  "estimatedCostUsd": 0.00563625,
   "rawText": "..."
 }
 ```
 
 `needsReview: true` means at least one expected field for that document type came back missing — the caller should prompt for a retake / manual entry rather than trust the result as-is.
 
-`inputTokens` / `outputTokens` / `estimatedCostUsd` are only populated for `engine=gemini` (Tesseract is free/local, so these are `null`). Cost is computed from Gemini's own reported token usage against `gemini-3.1-flash-lite`'s rate card ($0.25/1M input tokens, $1.50/1M output tokens) — update the constants in `GeminiKycExtractor.cs` if the configured model changes.
+`inputTokens` / `outputTokens` / `estimatedCostUsd` are only populated for `engine=openai` (Tesseract is free/local, so these are `null`). Cost is computed from OpenAI's own reported token usage against `gpt-4o-mini`'s rate card ($0.15/1M input tokens, $0.60/1M output tokens) — update the constants in `OpenAiKycExtractor.cs` if the configured model changes.
 
 ## Project structure
 
@@ -88,7 +88,7 @@ src/KycOcr.Api/
     LabelFieldExtractor.cs           - fuzzy label matching -> field values
     MrzParser.cs                     - passport MRZ (machine-readable zone) parsing
     TesseractKycExtractor.cs         - Tesseract engine, implements IKycExtractor
-    GeminiKycExtractor.cs            - Gemini engine, implements IKycExtractor
+    OpenAiKycExtractor.cs            - OpenAI engine, implements IKycExtractor
   tessdata/eng.traineddata           - Tesseract's English language data
 
 context/                             - sample KYC documents used for testing, plus the
@@ -98,5 +98,6 @@ context/                             - sample KYC documents used for testing, pl
 ## Known limitations
 
 - Tesseract's label matching needs the field label *wording* to match what it's tuned for (e.g. "DATE OF BIRTH") — different wording, abbreviations, or another language on a new document type needs a new entry added to `KycFieldSchema`.
-- Tesseract's accuracy drops sharply on rotated, blurry, or heavily noisy images. Use `engine=gemini` for those, or expect `needsReview: true`.
-- Free-tier Gemini's terms allow using submitted data to improve Google's models — fine for testing with synthetic specimens, but worth moving to a paid tier (or AWS Bedrock, which doesn't train on customer data by default) before sending real customer documents through it in production.
+- Tesseract's accuracy drops sharply on rotated, blurry, or heavily noisy images. Use `engine=openai` for those, or expect `needsReview: true`.
+- OpenAI's API terms (for the standard, non-enterprise tier) allow using submitted data to improve models unless you've opted out via the platform's data controls — fine for testing with synthetic specimens, but check your account's data-usage settings (or use AWS Bedrock, which doesn't train on customer data by default) before sending real customer documents through it in production.
+- The `env` file at the repo root (if present) is gitignored and should only ever be used to seed `dotnet user-secrets` locally — it should never be committed.

@@ -1,25 +1,23 @@
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
 using KycOcr.Api.Models;
 
 namespace KycOcr.Api.Services;
 
-// Alternative to TesseractKycExtractor: instead of OCR text + label
-// matching, sends the image straight to a Gemini vision model and asks it
-// to read the fields directly. Selected explicitly via engine=gemini on the
-// same endpoint - not an automatic fallback - so it's easy to compare the
-// two side by side.
-public class GeminiKycExtractor : IKycExtractor
+// Alternative to TesseractKycExtractor: sends the image straight to an
+// OpenAI vision model and asks it to read the fields directly. Selected
+// explicitly via engine=openai on the same endpoint - not an automatic
+// fallback - so it's easy to compare against the Tesseract path.
+public class OpenAiKycExtractor : IKycExtractor
 {
-    private const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions";
+    private const string Endpoint = "https://api.openai.com/v1/chat/completions";
 
-    // Pricing for gemini-3.1-flash-lite (per Google's rate card): $0.25 per
-    // 1M input tokens (text/image/video), $1.50 per 1M output tokens. Only
-    // accurate for this exact model - if Gemini:Model is ever changed to a
-    // different model, update these or the cost estimate will be wrong for
-    // the new model's actual rate.
-    private const decimal InputCostPerMillionTokens = 0.25m;
-    private const decimal OutputCostPerMillionTokens = 1.50m;
+    // Pricing for gpt-4o-mini, per OpenAI's published rate card: $0.15 per
+    // 1M input tokens, $0.60 per 1M output tokens. Update these if the
+    // configured model changes.
+    private const decimal InputCostPerMillionTokens = 0.15m;
+    private const decimal OutputCostPerMillionTokens = 0.60m;
 
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
@@ -32,12 +30,12 @@ public class GeminiKycExtractor : IKycExtractor
         [DocumentType.TradeLicense] = "commercial/trade license certificate",
     };
 
-    public GeminiKycExtractor(HttpClient httpClient, IConfiguration configuration)
+    public OpenAiKycExtractor(HttpClient httpClient, IConfiguration configuration)
     {
         _httpClient = httpClient;
-        _apiKey = configuration["Gemini:ApiKey"]
-            ?? throw new InvalidOperationException("Gemini:ApiKey is not configured. Run: dotnet user-secrets set \"Gemini:ApiKey\" \"...\"");
-        _model = configuration["Gemini:Model"] ?? "gemini-3.1-flash-lite";
+        _apiKey = configuration["OpenAI:ApiKey"]
+            ?? throw new InvalidOperationException("OpenAI:ApiKey is not configured. Run: dotnet user-secrets set \"OpenAI:ApiKey\" \"...\"");
+        _model = configuration["OpenAI:Model"] ?? "gpt-4o-mini";
     }
 
     public async Task<ExtractionResponse> ExtractAsync(DocumentType docType, byte[] imageBytes)
@@ -46,17 +44,17 @@ public class GeminiKycExtractor : IKycExtractor
         var requestBody = BuildRequest(docType, fieldMap, imageBytes);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
-        request.Headers.Add("x-goog-api-key", _apiKey);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         request.Content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json");
 
         using var httpResponse = await _httpClient.SendAsync(request);
         var responseText = await httpResponse.Content.ReadAsStringAsync();
 
         if (!httpResponse.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Gemini API call failed ({(int)httpResponse.StatusCode}): {responseText}");
+            throw new InvalidOperationException($"OpenAI API call failed ({(int)httpResponse.StatusCode}): {responseText}");
 
         var root = JsonNode.Parse(responseText)?.AsObject()
-            ?? throw new InvalidOperationException("Gemini response was not valid JSON.");
+            ?? throw new InvalidOperationException("OpenAI response was not valid JSON.");
 
         var fields = ParseFields(root);
         var (inputTokens, outputTokens) = ParseUsage(root);
@@ -68,7 +66,7 @@ public class GeminiKycExtractor : IKycExtractor
         return new ExtractionResponse
         {
             DocumentType = docType.ToString(),
-            Engine = "gemini",
+            Engine = "openai",
             Fields = fields,
             NeedsReview = KycFieldSchema.ComputeNeedsReview(docType, fields),
             OcrConfidence = 0.9f, // not meaningful for a model-based read - kept only for response-shape parity
@@ -83,11 +81,13 @@ public class GeminiKycExtractor : IKycExtractor
     {
         var docDescription = DocTypeDescriptions[docType];
         var fieldHints = string.Join("\n", fieldMap.Select(f => $"- {f.Field} - labeled \"{f.Label}\" on the document"));
+        var fieldKeys = string.Join(", ", fieldMap.Select(f => $"\"{f.Field}\""));
 
         var prompt = $"""
             You are extracting structured KYC data from a photo of a {docDescription}.
             Carefully read the document (including any machine-readable zone, if present)
-            and return exactly the fields listed below as a JSON object.
+            and respond with ONLY a JSON object (no markdown, no commentary) containing
+            exactly these keys: {fieldKeys}.
             If a field is not visible, not legible, or not present on this document, use
             an empty string "" for its value - never guess or invent a value.
 
@@ -95,38 +95,29 @@ public class GeminiKycExtractor : IKycExtractor
             {fieldHints}
             """;
 
-        var properties = new JsonObject();
-        var required = new JsonArray();
-        foreach (var (field, _) in fieldMap)
-        {
-            properties[field] = new JsonObject { ["type"] = "string" };
-            required.Add(field);
-        }
-
         return new JsonObject
         {
             ["model"] = _model,
-            ["input"] = new JsonArray
+            ["messages"] = new JsonArray
             {
-                new JsonObject { ["type"] = "text", ["text"] = prompt },
                 new JsonObject
                 {
-                    ["type"] = "image",
-                    ["data"] = Convert.ToBase64String(imageBytes),
-                    ["mime_type"] = DetectMimeType(imageBytes),
+                    ["role"] = "user",
+                    ["content"] = new JsonArray
+                    {
+                        new JsonObject { ["type"] = "text", ["text"] = prompt },
+                        new JsonObject
+                        {
+                            ["type"] = "image_url",
+                            ["image_url"] = new JsonObject
+                            {
+                                ["url"] = $"data:{DetectMimeType(imageBytes)};base64,{Convert.ToBase64String(imageBytes)}",
+                            },
+                        },
+                    },
                 },
             },
-            ["response_format"] = new JsonObject
-            {
-                ["type"] = "text",
-                ["mime_type"] = "application/json",
-                ["schema"] = new JsonObject
-                {
-                    ["type"] = "object",
-                    ["properties"] = properties,
-                    ["required"] = required,
-                },
-            },
+            ["response_format"] = new JsonObject { ["type"] = "json_object" },
         };
     }
 
@@ -139,20 +130,11 @@ public class GeminiKycExtractor : IKycExtractor
 
     private static Dictionary<string, string> ParseFields(JsonObject root)
     {
-        var steps = root["steps"]?.AsArray()
-            ?? throw new InvalidOperationException("Gemini response had no 'steps' array.");
+        var messageContent = root["choices"]?.AsArray()?.FirstOrDefault()?["message"]?["content"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("OpenAI response had no choices[0].message.content.");
 
-        var modelOutputText = steps
-            .Select(step => step?.AsObject())
-            .Where(step => step is not null && step["type"]?.GetValue<string>() == "model_output")
-            .Select(step => step!["content"]?.AsArray()?.FirstOrDefault()?["text"]?.GetValue<string>())
-            .FirstOrDefault(text => text is not null);
-
-        if (modelOutputText is null)
-            throw new InvalidOperationException("Gemini response had no model_output step with text content.");
-
-        var fieldsJson = JsonNode.Parse(modelOutputText)?.AsObject()
-            ?? throw new InvalidOperationException("Gemini's structured output was not valid JSON.");
+        var fieldsJson = JsonNode.Parse(messageContent)?.AsObject()
+            ?? throw new InvalidOperationException("OpenAI's response content was not valid JSON.");
 
         var fields = new Dictionary<string, string>();
         foreach (var (key, value) in fieldsJson)
@@ -164,14 +146,11 @@ public class GeminiKycExtractor : IKycExtractor
         return fields;
     }
 
-    // Gemini reports token usage on every response ("usage.total_input_tokens" /
-    // "total_output_tokens") - reading it back is what lets us turn it into
-    // an approximate per-request cost above.
     private static (int? InputTokens, int? OutputTokens) ParseUsage(JsonObject root)
     {
         var usage = root["usage"]?.AsObject();
-        var inputTokens = usage?["total_input_tokens"]?.GetValue<int>();
-        var outputTokens = usage?["total_output_tokens"]?.GetValue<int>();
+        var inputTokens = usage?["prompt_tokens"]?.GetValue<int>();
+        var outputTokens = usage?["completion_tokens"]?.GetValue<int>();
         return (inputTokens, outputTokens);
     }
 }
