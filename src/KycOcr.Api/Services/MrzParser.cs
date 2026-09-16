@@ -9,15 +9,22 @@ public static class MrzParser
 {
     private static readonly Regex InvalidMrzChar = new("[^A-Z0-9<]", RegexOptions.Compiled);
 
-    // Same length check used both to pick out MRZ candidate lines here and
-    // to keep those lines OUT of the pool of "next line" values the label
-    // matcher can grab for an unrelated field (see LabelFieldExtractor).
-    // A rough shape check, not a strict validation - good enough to
-    // recognize "this is clearly an MRZ line", which is all it's used for.
+    // Used both to pick out MRZ candidate lines below and to keep those
+    // lines OUT of the pool of "next line" values the label matcher can
+    // grab for an unrelated field (see LabelFieldExtractor). A rough shape
+    // check, not a strict validation - good enough to recognize "this is
+    // clearly an MRZ line", which is all it's used for.
+    //
+    // Length alone isn't enough: real field values (addresses, business
+    // descriptions) coincidentally land in the same 40-44 character range
+    // and are otherwise almost entirely A-Z letters too, once spaces are
+    // stripped - length + "mostly letters" cannot tell them apart from a
+    // real MRZ line. What natural-language text never contains, and a real
+    // MRZ line (almost) always does, is '<' filler padding.
     public static bool LooksLikeMrzLine(string text)
     {
-        var stripped = text.Replace(" ", "");
-        return stripped.Length is >= 40 and <= 44;
+        var stripped = text.Replace(" ", "").ToUpperInvariant();
+        return stripped.Length is >= 40 and <= 44 && stripped.Contains('<');
     }
 
     public static Dictionary<string, string>? TryParse(string text)
@@ -25,7 +32,7 @@ public static class MrzParser
         var candidateLines = text
             .Split('\n')
             .Select(l => l.Replace(" ", "").ToUpperInvariant().Trim())
-            .Where(l => l.Length is >= 40 and <= 44)
+            .Where(LooksLikeMrzLine)
             // The MRZ character set is strictly A-Z, 0-9 and '<' (ICAO 9303),
             // so anything else here is necessarily an OCR misread. '@' is a
             // common misread of '0' in this monospace font; correcting it
