@@ -58,7 +58,15 @@ public class TesseractOcrEngine
                             continue;
 
                         var text = iter.GetText(PageIteratorLevel.Word)?.Trim();
-                        if (!string.IsNullOrEmpty(text) && !BoilerplateWords.Contains(text.Trim('.', ',', ':')))
+                        var isBoilerplate = !string.IsNullOrEmpty(text) && BoilerplateWords.Contains(text.Trim('.', ',', ':'));
+                        // Drop tokens Tesseract hallucinates from borders,
+                        // watermarks, or textured backgrounds near real text
+                        // (e.g. a stray "|" from a photo box edge). Deliberately
+                        // narrow to line/border-like glyphs only - punctuation
+                        // such as "&" or "-" is legitimate field content (e.g.
+                        // "Trading & Real Estate", "Al-Farsi") and must survive.
+                        var isSymbolNoise = !string.IsNullOrEmpty(text) && text.All(c => "|_~¦".Contains(c));
+                        if (!string.IsNullOrEmpty(text) && !isBoilerplate && !isSymbolNoise)
                             words.Add((text, box));
                     } while (iter.Next(PageIteratorLevel.TextLine, PageIteratorLevel.Word));
 
