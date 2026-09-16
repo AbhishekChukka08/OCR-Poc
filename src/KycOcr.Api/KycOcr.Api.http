@@ -1,0 +1,6 @@
+@KycOcr.Api_HostAddress = http://localhost:5137
+
+GET {{KycOcr.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
