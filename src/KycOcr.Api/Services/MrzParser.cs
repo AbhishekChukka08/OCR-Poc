@@ -9,6 +9,17 @@ public static class MrzParser
 {
     private static readonly Regex InvalidMrzChar = new("[^A-Z0-9<]", RegexOptions.Compiled);
 
+    // Same length check used both to pick out MRZ candidate lines here and
+    // to keep those lines OUT of the pool of "next line" values the label
+    // matcher can grab for an unrelated field (see LabelFieldExtractor).
+    // A rough shape check, not a strict validation - good enough to
+    // recognize "this is clearly an MRZ line", which is all it's used for.
+    public static bool LooksLikeMrzLine(string text)
+    {
+        var stripped = text.Replace(" ", "");
+        return stripped.Length is >= 40 and <= 44;
+    }
+
     public static Dictionary<string, string>? TryParse(string text)
     {
         var candidateLines = text

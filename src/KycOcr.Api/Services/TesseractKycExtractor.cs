@@ -16,7 +16,19 @@ public class TesseractKycExtractor : IKycExtractor
     public Task<ExtractionResponse> ExtractAsync(DocumentType docType, byte[] imageBytes)
     {
         var ocr = _ocrEngine.Extract(imageBytes);
-        var fields = _labelExtractor.Extract(ocr.Rows, KycFieldSchema.FieldsByDocType[docType]);
+
+        // MRZ lines are long, dense, and can land right after any label
+        // whose real value row got missed by OCR - without this, the label
+        // matcher's "grab whatever's on the next line" rule could pick up a
+        // raw MRZ string as an unrelated field's value. MRZ is parsed
+        // separately below, so it's safe to exclude here.
+        var rowsExcludingMrz = ocr.Rows
+            .Select(r => new OcrRow(
+                MrzParser.LooksLikeMrzLine(r.Left) ? "" : r.Left,
+                MrzParser.LooksLikeMrzLine(r.Right) ? "" : r.Right))
+            .ToList();
+
+        var fields = _labelExtractor.Extract(rowsExcludingMrz, KycFieldSchema.FieldsByDocType[docType]);
 
         if (docType == DocumentType.Passport)
         {
