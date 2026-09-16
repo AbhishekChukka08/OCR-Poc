@@ -49,13 +49,13 @@ public static class KycFieldSchema
         },
     };
 
-    // Same "was this actually a good read?" rule for every engine: too few
-    // of the expected fields came back non-empty, flag it for human review
-    // rather than trusting a mostly-empty result.
+    // Same "was this actually a good read?" rule for every engine: for a KYC
+    // document, a silently-missing field is not acceptable just because most
+    // of the document came through fine - ANY expected field missing means
+    // a human needs to check this before it's trusted.
     public static bool ComputeNeedsReview(DocumentType docType, Dictionary<string, string> fields)
     {
         var expectedFieldCount = FieldsByDocType[docType].Length;
-        var extractionRate = fields.Count / (double)expectedFieldCount;
-        return extractionRate < 0.5;
+        return fields.Count < expectedFieldCount;
     }
 }
