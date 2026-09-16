@@ -3,20 +3,12 @@ using KycOcr.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton<TesseractOcrEngine>();
 builder.Services.AddSingleton<LabelFieldExtractor>();
 builder.Services.AddSingleton<TesseractKycExtractor>();
 builder.Services.AddHttpClient<GeminiKycExtractor>();
 
 var app = builder.Build();
-
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
 
 app.MapPost("/api/ocr/extract", async (HttpRequest request, TesseractKycExtractor tesseractExtractor, GeminiKycExtractor geminiExtractor) =>
 {
